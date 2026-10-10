@@ -1,0 +1,12 @@
+SYSTEM = bulk Ag (fcc) chemical potential
+ENCUT  = 500        ! same as the interface runs
+PREC   = Accurate
+GGA    = PE         ! PBE
+ISPIN  = 1
+LREAL  = .FALSE.
+LWAVE  = .FALSE.
+LCHARG = .FALSE.
+EDIFF  = 1E-6
+IBRION = -1
+NSW    = 0
+ISMEAR = -5         ! tetrahedron method with Bloechl corrections for the final energy

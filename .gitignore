@@ -1,0 +1,18 @@
+# local configuration and run outputs
+culita.cfg
+config.sh
+.culita_state.json
+jobs/
+logs/
+results.txt
+culita_results_*.tar.gz
+bulk/*/POTCAR
+bulk/*/KPOINTS.dense
+bulk/*/relax1/
+bulk/*/relax2/
+bulk/*/static/
+bulk/*/static_dense/
+core/*/
+__pycache__/
+# never commit VASP pseudopotentials
+POTCAR

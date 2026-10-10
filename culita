@@ -1,0 +1,8 @@
+#!/bin/bash
+# Launcher: finds a Python 3 and runs culita.py (see ./culita help)
+DIR="$(cd "$(dirname "$0")" && pwd)"
+for py in python3 python; do
+  if command -v $py >/dev/null 2>&1 && $py -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' 2>/dev/null; then
+    exec $py "$DIR/culita.py" "$@"; fi
+done
+echo "culita needs Python >= 3.6 (try: module load python)"; exit 1
