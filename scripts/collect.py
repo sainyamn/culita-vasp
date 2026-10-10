@@ -64,33 +64,51 @@ for d in sorted(glob.glob(os.path.join(root, 'bulk', '*'))):
                f'{str(r2["conv"]):>6s} {PAPER_MU.get(el, float("nan")):9.3f}  {", ".join(checks)}  [{pot}]')
 
 out += ['', 'CORE SUBSTITUTION  E_subs = E(core X) - E1(host) - mu_X + mu_Cu']
-h = read_outcar(os.path.join(os.environ.get('ORIG_HOST_DIR', ''), 'OUTCAR'))
-t = read_outcar(os.path.join(os.environ.get('ORIG_TA_CORE_DIR', ''), 'OUTCAR'))
+orig = os.environ.get('ORIG_TA_CORE_DIR', '')
+packaged = not (orig and os.path.isdir(orig))
 field = 'e0'
-if h['e0'] is not None and t['e0'] is not None:
-    best = None
-    for fld, name in (('e0', 'energy(sigma->0)'), ('toten', 'TOTEN')):
-        if h[fld] is None or t[fld] is None: continue
-        v = t[fld] - h[fld] - PAPER_MU['Ta'] + PAPER_MU['Cu']
-        out.append(f'CHECK original Ta with {name:16s}: E_subs(Ta) = {v:+.3f} eV (paper +{PAPER_TA_SUBS})')
-        if best is None or abs(v - PAPER_TA_SUBS) < best[0]:
-            best = (abs(v - PAPER_TA_SUBS), fld, name)
-    field = best[1]
-    out.append(f'  -> using {best[2]} for Nb/Zr  [{flag(best[0] < 0.02)} reproduces +0.81 within 0.02 eV]')
-    if 'Ta' in mu and 'Cu' in mu:
-        out.append(f'  original Ta with the NEW bulk mu: E_subs(Ta) = {t[field] - h[field] - mu["Ta"] + mu["Cu"]:+.3f} eV')
+if packaged:
+    out.append('mode: PACKAGED cell (core_inputs/, 459 atoms; host, Ta and X all relaxed here with the same INCAR)')
+    h = read_outcar(os.path.join(root, 'core', 'host', 'OUTCAR')); t = read_outcar(os.path.join(root, 'core', 'Ta', 'OUTCAR'))
+    for lab, r in (('host', h), ('Ta', t)):
+        fm = '%.3f eV/A' % r['fmax'] if r['fmax'] is not None else 'n/a'
+        out.append('%s: relaxation %s (largest remaining force %s); E = %s eV' % (lab, flag(r['conv']), fm, r['e0']))
+    if h['e0'] is not None and t['e0'] is not None and 'Ta' in mu and 'Cu' in mu:
+        v = t['e0'] - h['e0'] - mu['Ta'] + mu['Cu']
+        out.append('E_subs(Ta) = %+.3f eV in this cell (new mu)   [published +0.81 eV from the original cell: %s]'
+                   % (v, 'consistent' if abs(v - PAPER_TA_SUBS) < 0.1 else 'differs by %+.2f eV - same site/cell as the original? see README' % (v - PAPER_TA_SUBS)))
 else:
-    out.append('original host / Ta-core OUTCAR not found: check ORIG_HOST_DIR and ORIG_TA_CORE_DIR in config.sh')
+    out.append('mode: ORIGINAL cell (%s)' % orig)
+    h = read_outcar(os.path.join(os.environ.get('ORIG_HOST_DIR', ''), 'OUTCAR'))
+    t = read_outcar(os.path.join(orig, 'OUTCAR'))
+    if h['e0'] is not None and t['e0'] is not None:
+        best = None
+        for fld, name in (('e0', 'energy(sigma->0)'), ('toten', 'TOTEN')):
+            if h[fld] is None or t[fld] is None: continue
+            v = t[fld] - h[fld] - PAPER_MU['Ta'] + PAPER_MU['Cu']
+            out.append('CHECK original Ta with %-16s: E_subs(Ta) = %+.3f eV (paper +%s)' % (name, v, PAPER_TA_SUBS))
+            if best is None or abs(v - PAPER_TA_SUBS) < best[0]:
+                best = (abs(v - PAPER_TA_SUBS), fld, name)
+        field = best[1]
+        out.append('  -> using %s for Nb/Zr  [%s reproduces +0.81 within 0.02 eV]' % (best[2], flag(best[0] < 0.02)))
+        if 'Ta' in mu and 'Cu' in mu:
+            out.append('  original Ta with the NEW bulk mu: E_subs(Ta) = %+.3f eV' % (t[field] - h[field] - mu['Ta'] + mu['Cu']))
+    else:
+        out.append('original host / Ta-core OUTCAR not found: check ORIG_HOST_DIR and ORIG_TA_CORE_DIR')
 for d in sorted(glob.glob(os.path.join(root, 'core', '*'))):
-    X = os.path.basename(d); c = read_outcar(os.path.join(d, 'OUTCAR'))
-    if c[field] is None or h[field] is None or X not in mu:
-        out.append(f'{X}: not available yet'); continue
-    fm = f'{c["fmax"]:.3f} eV/A' if c['fmax'] is not None else 'n/a'
-    out.append(f'{X}: relaxation {flag(c["conv"])} (largest remaining force {fm}); E = {c[field]:.4f} eV')
+    X = os.path.basename(d)
+    if X in ('host',) or (packaged and X == 'Ta'):
+        continue
+    c = read_outcar(os.path.join(d, 'OUTCAR'))
+    if c[field] is None or h.get(field) is None or X not in mu:
+        out.append('%s: not available yet' % X); continue
+    fm = '%.3f eV/A' % c['fmax'] if c['fmax'] is not None else 'n/a'
+    out.append('%s: relaxation %s (largest remaining force %s); E = %.4f eV' % (X, flag(c['conv']), fm, c[field]))
     for lab, mcu in (('paper mu_Cu', PAPER_MU['Cu']), ('new mu_Cu', mu.get('Cu'))):
         if mcu is not None:
-            out.append(f'    E_subs({X}) = {c[field] - h[field] - mu[X] + mcu:+.3f} eV   [{lab}, new mu_{X}]')
-    if 'Ta' in mu and 'Cu' in mu:
-        out.append(f'    E_subs({X}) - E_subs(Ta) = {(c[field] - mu[X]) - (t[field] - mu["Ta"]):+.3f} eV  (all new mu; independent of mu_Cu and E1)')
+            out.append('    E_subs(%s) = %+.3f eV   [%s, new mu_%s]' % (X, c[field] - h[field] - mu[X] + mcu, lab, X))
+    if 'Ta' in mu and t.get(field) is not None:
+        out.append('    E_subs(%s) - E_subs(Ta) = %+.3f eV  (same cell and site; independent of mu_Cu and of the host energy)'
+                   % (X, (c[field] - mu[X]) - (t[field] - mu['Ta'])))
 txt = '\n'.join(out) + '\n'
 open(os.path.join(root, 'results.txt'), 'w').write(txt); print(txt)

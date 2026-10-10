@@ -1,0 +1,20 @@
+SYSTEM = embedded Cu3Li precipitate, core substitution (packaged cell)
+! settings stated in the paper: PBE/PAW, ENCUT = 500 eV, EDIFF = 1E-3 eV, Gamma point, quasi-Newton relaxation
+ENCUT  = 500
+GGA    = PE
+EDIFF  = 1E-3
+IBRION = 1          ! quasi-Newton (RMM-DIIS)
+ISIF   = 2          ! relax ions, fixed cell
+NSW    = 300
+EDIFFG = -0.03      ! forces < 0.03 eV/A
+POTIM  = 0.3
+ISMEAR = 1          ! Methfessel-Paxton for metals
+SIGMA  = 0.10
+ISPIN  = 1
+PREC   = Normal
+LREAL  = Auto       ! 459 atoms
+ALGO   = Fast
+NELM   = 120
+LWAVE  = .FALSE.
+LCHARG = .FALSE.
+! NCORE = 4         ! optional: set for your cluster (e.g. cores per socket)

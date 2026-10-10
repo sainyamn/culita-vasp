@@ -87,6 +87,16 @@ def env_from_cfg(c):
         e['SCREEN_DIR_' + el] = c.get('paths', 'screen_' + el, fallback='')
     return e
 
+def packaged(c):
+    d = c.get('paths', 'ta_core', fallback='')
+    return not d
+
+def core_jobs(c):
+    xs = c.get('run', 'core_elements', fallback='Nb Zr').split()
+    if packaged(c):
+        return ['host', 'Ta'] + [x for x in xs if x not in ('host', 'Ta')]
+    return xs
+
 # ------------------------------------------------------------------ validation
 def read_species_counts(fn):
     L = open(fn).read().splitlines()
@@ -137,6 +147,14 @@ def check_potcars(c):
 
 def check_orig(c):
     t, h = c.get('paths', 'ta_core', fallback=''), c.get('paths', 'host', fallback='')
+    if packaged(c):
+        need = ['host', 'Ta'] + c.get('run', 'core_elements', fallback='Nb Zr').split()
+        miss = [x for x in need if not os.path.isfile(os.path.join(ROOT, 'core_inputs', x, 'POSCAR'))]
+        if miss:
+            say('packaged core cells missing for: %s (core_inputs/)' % ', '.join(miss), 'err'); return False
+        say('core runs: PACKAGED 459-atom cell (no original runs given) - host, Ta, %s will be relaxed with core_inputs/INCAR'
+            % ', '.join(need[2:]), 'ok')
+        return True
     ok = True
     for lab, d in (('Ta-core run', t), ('host run (no core Ta)', h)):
         if not d or not os.path.isdir(d):
@@ -209,9 +227,13 @@ def cmd_setup(args):
     c.set('paths', 'potcar_lib', os.path.abspath(os.path.expanduser(ask('PBE PAW library (folder with Cu/POTCAR, Ta/POTCAR, ...)',
                                                                       c.get('paths', 'potcar_lib', fallback='') or detect_potcar_lib()))))
     # original runs
-    print('\n  The original runs from the paper (each folder needs INCAR, KPOINTS, POTCAR, CONTCAR, OUTCAR):')
-    c.set('paths', 'ta_core', os.path.abspath(os.path.expanduser(ask('Folder of the Ta-in-core run (E_subs = +0.81 eV)', c.get('paths', 'ta_core', fallback='')))))
-    c.set('paths', 'host', os.path.abspath(os.path.expanduser(ask('Folder of the same cell WITHOUT the core Ta', c.get('paths', 'host', fallback='')))))
+    print('\n  Core substitution. If the ORIGINAL Ta-core run and its host run (folders with INCAR, KPOINTS, POTCAR, CONTCAR,')
+    print('  OUTCAR) are still available, give them and Nb/Zr will reuse exactly that cell and INCAR. Otherwise press Enter:')
+    print('  the packaged 459-atom cell (core_inputs/) is used and the host, Ta, Nb and Zr are all relaxed here.')
+    t = ask('Folder of the original Ta-in-core run (Enter = use the packaged cell)', c.get('paths', 'ta_core', fallback=''))
+    c.set('paths', 'ta_core', os.path.abspath(os.path.expanduser(t)) if t else '')
+    h = ask('Folder of the same cell WITHOUT the core Ta', c.get('paths', 'host', fallback='')) if t else ''
+    c.set('paths', 'host', os.path.abspath(os.path.expanduser(h)) if h else '')
     print('\n  Optional: original 459-atom element-screen runs, so the same PAW variants are used (Enter to skip):')
     for el in SCREEN:
         v = ask('  element-screen run folder for %s' % el, c.get('paths', 'screen_' + el, fallback=''))
@@ -388,7 +410,7 @@ def cmd_run(args):
         fn = job_script(c, 'culita_bulk', 'bash scripts/run_bulk.sh', c.get('scheduler', 'time_bulk', fallback='06:00:00'))
         state['bulk'] = submit(c, fn, local); say('bulk chemical potentials submitted (%s)' % state['bulk'], 'ok')
     if do_core:
-        for X in c.get('run', 'core_elements', fallback='Nb Zr').split():
+        for X in core_jobs(c):
             fn = job_script(c, 'culita_core_' + X, 'bash scripts/run_core.sh %s' % X, c.get('scheduler', 'time_core', fallback='48:00:00'))
             state['core_' + X] = submit(c, fn, local); say('core substitution %s submitted (%s)' % (X, state['core_' + X]), 'ok')
     json.dump(state, open(STATE, 'w'), indent=1)
@@ -407,7 +429,7 @@ def cmd_status(args):
             print('  %-10s %-22s %s' % (k, v, q))
     print(C['b'] + 'Calculations' + C['end'])
     rows = [('bulk/%s/%s' % (el, st), os.path.join(ROOT, 'bulk', el, st)) for el in BULK for st in ('relax1', 'relax2', 'static', 'static_dense')]
-    rows += [('core/%s' % X, os.path.join(ROOT, 'core', X)) for X in c.get('run', 'core_elements', fallback='Nb Zr').split()]
+    rows += [('core/%s' % X, os.path.join(ROOT, 'core', X)) for X in core_jobs(c)]
     n = {'done': 0}
     for lab, d in rows:
         st, msg = diagnose(d); n[st] = n.get(st, 0) + 1
@@ -446,10 +468,16 @@ FAKE_VASP = r'''
 import os, sys
 L = open('POSCAR').read().splitlines(); sp = L[5].split(); n = [int(x) for x in L[6].split()]; N = sum(n)
 e = {'Cu': -3.728, 'Li': -2.051, 'Ta': -11.865, 'Nb': -10.10, 'Zr': -8.55, 'V': -9.08, 'Mo': -10.85, 'W': -12.95, 'Ag': -2.83}
+import re
 if N < 10:
     E0 = sum(e[s] * k for s, k in zip(sp, n)); TOT = E0
 else:
-    X = [s for s in sp if s in ('Nb', 'Zr')][0]; E0 = -3000.0 + {'Nb': 0.40, 'Zr': 0.20}[X] + e[X] - e['Cu']; TOT = E0 - 0.077
+    m = re.search(r'(?:X=|-> )([A-Z][a-z]?)', L[0])
+    if m is None:                                   # host
+        E0 = -3000.0
+    else:
+        X = m.group(1); E0 = -3000.0 + {'Ta': 0.81, 'Nb': 0.40, 'Zr': 0.20}[X] + e[X] - e['Cu']
+    TOT = E0 - 0.077 if 'ORIGINAL_MODE' in os.environ else E0
 inc = open('INCAR').read(); assert 'ICHARG = 1' not in inc
 open('CONTCAR', 'w').write(open('POSCAR').read())
 open('OSZICAR', 'w').write('DAV:   1  -1.0\nDAV:   2  -1.0\n   1 F= %.5f E0= %.5f\n' % (TOT, E0))
@@ -505,20 +533,36 @@ def cmd_selftest(args):
                                **{'screen_' + el: '' for el in SCREEN}),
                  'scheduler': {'type': 'local'}, 'run': {'core_elements': 'Nb Zr', 'ntasks': '1'}})
     with open(os.path.join(R, 'culita.cfg'), 'w') as f: c.write(f)
-    env = dict(os.environ); env['CULITA_FOREGROUND'] = '1'
-    r = subprocess.run([sys.executable, os.path.join(R, 'culita.py'), 'run', '--local', '--wait'], env=env,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    res = open(os.path.join(R, 'results.txt')).read() if os.path.isfile(os.path.join(R, 'results.txt')) else ''
-    checks = [('pre-flight + run finished', r.returncode == 0),
-              ('Ta reference reproduced (+0.810)', '+0.810' in res),
-              ('E_subs(Nb) = +0.373 eV', 'E_subs(Nb) = +0.373' in res),
-              ('E_subs(Zr) = +0.173 eV', 'E_subs(Zr) = +0.173' in res),
-              ('controls PASS', res.count('control PASS') == 3),
-              ('MAGMOM re-mapped', 'MAGMOM' in open(os.path.join(R, 'core', 'Nb', 'INCAR')).read() if os.path.isfile(os.path.join(R, 'core', 'Nb', 'INCAR')) else False)]
+    # packaged-mode copy of the repository (no original runs)
+    R2 = os.path.join(tmp, 'repo_packaged'); shutil.copytree(R, R2)
+    c.set('paths', 'ta_core', ''); c.set('paths', 'host', '')
+    with open(os.path.join(R2, 'culita.cfg'), 'w') as f: c.write(f)
+
+    def scenario(repo, extra_env):
+        env = dict(os.environ); env.update(extra_env)
+        r = subprocess.run([sys.executable, os.path.join(repo, 'culita.py'), 'run', '--local', '--wait'], env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        res = open(os.path.join(repo, 'results.txt')).read() if os.path.isfile(os.path.join(repo, 'results.txt')) else ''
+        return r, res
+
+    r1, res1 = scenario(R, {'ORIGINAL_MODE': '1'})
+    inc = os.path.join(R, 'core', 'Nb', 'INCAR')
+    r2, res2 = scenario(R2, {})
+    checks = [('original mode: run finished', r1.returncode == 0),
+              ('original mode: Ta reference reproduced (+0.810, TOTEN chosen)', '+0.810' in res1 and 'using TOTEN' in res1),
+              ('original mode: E_subs(Nb) = +0.373 eV', 'E_subs(Nb) = +0.373' in res1),
+              ('original mode: E_subs(Zr) = +0.173 eV', 'E_subs(Zr) = +0.173' in res1),
+              ('original mode: MAGMOM re-mapped', os.path.isfile(inc) and 'MAGMOM' in open(inc).read()),
+              ('bulk controls PASS', res1.count('control PASS') == 3),
+              ('packaged mode: run finished (host, Ta, Nb, Zr)', r2.returncode == 0),
+              ('packaged mode: E_subs(Ta) = +0.810 eV', 'E_subs(Ta) = +0.810 eV in this cell' in res2),
+              ('packaged mode: E_subs(Nb) = +0.400 eV', 'E_subs(Nb) = +0.400' in res2),
+              ('packaged mode: E_subs(Zr) - E_subs(Ta) = -0.610 eV', 'E_subs(Zr) - E_subs(Ta) = -0.610' in res2)]
     ok = all(v for _, v in checks)
     for lab, v in checks: say(lab, 'ok' if v else 'err')
     if not ok:
-        print(r.stdout[-4000:]); print(res)
+        for r, res in ((r1, res1), (r2, res2)):
+            print(r.stdout[-3000:]); print(res)
     say('SELFTEST %s  (work folder: %s)' % ('PASSED' if ok else 'FAILED', tmp), 'ok' if ok else 'err')
     if ok: shutil.rmtree(tmp, ignore_errors=True)
     sys.exit(0 if ok else 1)
@@ -532,7 +576,7 @@ def main():
     if cmd == 'run' and '--wait' in rest:       # foreground (used by selftest): run the job scripts directly
         c = load_cfg(); write_config_sh(c)
         if not preflight(c): sys.exit(1)
-        for name, body in [('bulk', 'bash scripts/run_bulk.sh')] + [('core_' + X, 'bash scripts/run_core.sh ' + X) for X in c.get('run', 'core_elements').split()]:
+        for name, body in [('bulk', 'bash scripts/run_bulk.sh')] + [('core_' + X, 'bash scripts/run_core.sh ' + X) for X in core_jobs(c)]:
             fn = job_script(c, 'culita_' + name, body, '01:00:00')
             r = subprocess.run(['bash', fn], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
             if r.returncode: print(r.stdout[-3000:]); sys.exit(1)
