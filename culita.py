@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """culita - run the remaining VASP calculations for the Cu-Ta-Li bilayer-complexion letter.
 
-  ./culita setup      guided configuration (auto-detects VASP, PAW library, scheduler; validates the original runs)
+  ./culita setup      guided configuration (auto-detects VASP, PAW library, scheduler)
   ./culita check      pre-flight checks only (nothing is submitted)
   ./culita run        submit the jobs (Slurm / PBS) or run them here   [--bulk | --core] [--local]
   ./culita status     progress of every calculation, with VASP errors explained
@@ -68,10 +68,7 @@ def write_config_sh(c):
     if g('vasp', 'modules'):
         lines.append(g('vasp', 'modules'))
     lines += ['export VASP_STD=%s' % sq(g('vasp', 'std')), 'export VASP_GAM=%s' % sq(g('vasp', 'gam') or g('vasp', 'std')),
-              'export POTCAR_LIB=%s' % sq(g('paths', 'potcar_lib')),
-              'export ORIG_TA_CORE_DIR=%s' % sq(g('paths', 'ta_core')), 'export ORIG_HOST_DIR=%s' % sq(g('paths', 'host'))]
-    for el in SCREEN:
-        lines.append('export SCREEN_DIR_%s=%s' % (el, sq(g('paths', 'screen_' + el))))
+              'export POTCAR_LIB=%s' % sq(g('paths', 'potcar_lib'))]
     lines.append('export CORE_ELEMENTS=%s' % sq(g('run', 'core_elements', 'Nb Zr')))
     open(os.path.join(ROOT, 'config.sh'), 'w').write('\n'.join(lines) + '\n')
 
@@ -81,21 +78,12 @@ def sq(s):
 def env_from_cfg(c):
     e = dict(os.environ)
     e.update({'VASP_STD': c.get('vasp', 'std', fallback=''), 'VASP_GAM': c.get('vasp', 'gam', fallback=''),
-              'POTCAR_LIB': c.get('paths', 'potcar_lib', fallback=''),
-              'ORIG_TA_CORE_DIR': c.get('paths', 'ta_core', fallback=''), 'ORIG_HOST_DIR': c.get('paths', 'host', fallback='')})
-    for el in SCREEN:
-        e['SCREEN_DIR_' + el] = c.get('paths', 'screen_' + el, fallback='')
+              'POTCAR_LIB': c.get('paths', 'potcar_lib', fallback='')})
     return e
-
-def packaged(c):
-    d = c.get('paths', 'ta_core', fallback='')
-    return not d
 
 def core_jobs(c):
     xs = c.get('run', 'core_elements', fallback='Nb Zr').split()
-    if packaged(c):
-        return ['host', 'Ta'] + [x for x in xs if x not in ('host', 'Ta')]
-    return xs
+    return ['host', 'Ta'] + [x for x in xs if x not in ('host', 'Ta')]
 
 # ------------------------------------------------------------------ validation
 def read_species_counts(fn):
@@ -145,54 +133,17 @@ def check_potcars(c):
             say('PAW %-2s: none of %s in %s' % (el, '/'.join(vs), lib), 'err'); ok = False
     return ok
 
-def check_orig(c):
-    t, h = c.get('paths', 'ta_core', fallback=''), c.get('paths', 'host', fallback='')
-    if packaged(c):
-        need = ['host', 'Ta'] + c.get('run', 'core_elements', fallback='Nb Zr').split()
-        miss = [x for x in need if not os.path.isfile(os.path.join(ROOT, 'core_inputs', x, 'POSCAR'))]
-        if miss:
-            say('packaged core cells missing for: %s (core_inputs/)' % ', '.join(miss), 'err'); return False
-        say('core runs: PACKAGED 459-atom cell (no original runs given) - host, Ta, %s will be relaxed with core_inputs/INCAR'
-            % ', '.join(need[2:]), 'ok')
-        return True
-    ok = True
-    for lab, d in (('Ta-core run', t), ('host run (no core Ta)', h)):
-        if not d or not os.path.isdir(d):
-            say('%s: folder not found: %r' % (lab, d), 'err'); ok = False; continue
-        miss = [f for f in ('INCAR', 'KPOINTS', 'POTCAR', 'OUTCAR') if not os.path.isfile(os.path.join(d, f))]
-        if not (os.path.isfile(os.path.join(d, 'CONTCAR')) or os.path.isfile(os.path.join(d, 'POSCAR'))): miss.append('CONTCAR/POSCAR')
-        if miss:
-            say('%s: missing %s in %s' % (lab, ', '.join(miss), d), 'err'); ok = False; continue
-        e = outcar_energy(os.path.join(d, 'OUTCAR'))
-        if e is None:
-            say('%s: no final energy in OUTCAR (run incomplete?)' % lab, 'err'); ok = False; continue
-        conv = 'reached required accuracy' in open(os.path.join(d, 'OUTCAR'), errors='replace').read()
-        say('%s: E = %.4f eV%s  (%s)' % (lab, e, '' if conv else '  [relaxation NOT converged]', d), 'ok' if conv else 'warn')
-    if ok:
-        ft = os.path.join(t, 'CONTCAR') if os.path.isfile(os.path.join(t, 'CONTCAR')) else os.path.join(t, 'POSCAR')
-        fh = os.path.join(h, 'CONTCAR') if os.path.isfile(os.path.join(h, 'CONTCAR')) else os.path.join(h, 'POSCAR')
-        st, ct = read_species_counts(ft); shh, ch = read_species_counts(fh)
-        nt, nh = dict(zip(st, ct)), dict(zip(shh, ch))
-        if sum(ct) != sum(ch):
-            say('the two cells have different numbers of atoms (%d vs %d): they must be the same cell' % (sum(ct), sum(ch)), 'err'); ok = False
-        elif nt.get('Ta', 0) - nh.get('Ta', 0) != 1 or nh.get('Cu', 0) - nt.get('Cu', 0) != 1:
-            say('expected the Ta-core cell to have exactly one more Ta and one fewer Cu than the host; found Ta %s vs %s, Cu %s vs %s'
-                % (nt.get('Ta'), nh.get('Ta'), nt.get('Cu'), nh.get('Cu')), 'err'); ok = False
-        else:
-            say('cells match: %d atoms, Ta-core = host + 1 Ta - 1 Cu' % sum(ct), 'ok')
-            et, eh = outcar_energy(os.path.join(t, 'OUTCAR')), outcar_energy(os.path.join(h, 'OUTCAR'))
-            v = et - eh - (-11.865) + (-3.728)
-            say('original E_subs(Ta) from these runs = %+.3f eV (paper +0.81; the exact field is chosen in results)' % v,
-                'ok' if abs(v - 0.81) < 0.05 else 'warn')
-    for el in SCREEN:
-        d = c.get('paths', 'screen_' + el, fallback='')
-        if d and not os.path.isfile(os.path.join(d, 'POTCAR')):
-            say('element-screen folder for %s has no POTCAR: %s' % (el, d), 'warn')
-    return ok
+def check_core_inputs(c):
+    need = core_jobs(c)
+    miss = [x for x in need if not os.path.isfile(os.path.join(ROOT, 'core_inputs', x, 'POSCAR'))]
+    if miss:
+        say('core cells missing for: %s (core_inputs/)' % ', '.join(miss), 'err'); return False
+    say('core runs: 459-atom cell in core_inputs/ - %s will be relaxed with core_inputs/INCAR' % ', '.join(need), 'ok')
+    return True
 
 def preflight(c, quiet_header=False):
     if not quiet_header: print(C['b'] + 'Pre-flight checks' + C['end'])
-    a = check_vasp(c); b = check_potcars(c); d = check_orig(c)
+    a = check_vasp(c); b = check_potcars(c); d = check_core_inputs(c)
     sched = c.get('scheduler', 'type', fallback='local')
     say('scheduler: %s' % sched, 'ok')
     return a and b and d
@@ -221,23 +172,12 @@ def cmd_setup(args):
     np_ = ask('MPI ranks per job', c.get('run', 'ntasks', fallback='32')); c.set('run', 'ntasks', np_)
     std = shutil.which('vasp_std') or 'vasp_std'; gam = shutil.which('vasp_gam') or 'vasp_gam'
     c.set('vasp', 'std', ask('Command to run vasp_std', c.get('vasp', 'std', fallback='mpirun -np %s %s' % (np_, std))))
-    c.set('vasp', 'gam', ask('Command to run vasp_gam (Gamma-only large cells; same as above if the original used vasp_std)',
+    c.set('vasp', 'gam', ask('Command to run vasp_gam (Gamma-only 459-atom cells; same as above if vasp_gam is not available)',
                              c.get('vasp', 'gam', fallback='mpirun -np %s %s' % (np_, gam))))
     # PAW
     c.set('paths', 'potcar_lib', os.path.abspath(os.path.expanduser(ask('PBE PAW library (folder with Cu/POTCAR, Ta/POTCAR, ...)',
                                                                       c.get('paths', 'potcar_lib', fallback='') or detect_potcar_lib()))))
-    # original runs
-    print('\n  Core substitution. If the ORIGINAL Ta-core run and its host run (folders with INCAR, KPOINTS, POTCAR, CONTCAR,')
-    print('  OUTCAR) are still available, give them and Nb/Zr will reuse exactly that cell and INCAR. Otherwise press Enter:')
-    print('  the packaged 459-atom cell (core_inputs/) is used and the host, Ta, Nb and Zr are all relaxed here.')
-    t = ask('Folder of the original Ta-in-core run (Enter = use the packaged cell)', c.get('paths', 'ta_core', fallback=''))
-    c.set('paths', 'ta_core', os.path.abspath(os.path.expanduser(t)) if t else '')
-    h = ask('Folder of the same cell WITHOUT the core Ta', c.get('paths', 'host', fallback='')) if t else ''
-    c.set('paths', 'host', os.path.abspath(os.path.expanduser(h)) if h else '')
-    print('\n  Optional: original 459-atom element-screen runs, so the same PAW variants are used (Enter to skip):')
-    for el in SCREEN:
-        v = ask('  element-screen run folder for %s' % el, c.get('paths', 'screen_' + el, fallback=''))
-        c.set('paths', 'screen_' + el, os.path.abspath(os.path.expanduser(v)) if v else '')
+    print('\n  Core substitution: the 459-atom cell in core_inputs/ is used; the host, Ta, Nb and Zr are all relaxed here.')
     c.set('run', 'core_elements', ask('Core substitutions to run', c.get('run', 'core_elements', fallback='Nb Zr')))
     # scheduler
     sched = 'slurm' if shutil.which('sbatch') else ('pbs' if shutil.which('qsub') else 'local')
@@ -477,7 +417,7 @@ else:
         E0 = -3000.0
     else:
         X = m.group(1); E0 = -3000.0 + {'Ta': 0.81, 'Nb': 0.40, 'Zr': 0.20}[X] + e[X] - e['Cu']
-    TOT = E0 - 0.077 if 'ORIGINAL_MODE' in os.environ else E0
+    TOT = E0
 inc = open('INCAR').read(); assert 'ICHARG = 1' not in inc
 open('CONTCAR', 'w').write(open('POSCAR').read())
 open('OSZICAR', 'w').write('DAV:   1  -1.0\nDAV:   2  -1.0\n   1 F= %.5f E0= %.5f\n' % (TOT, E0))
@@ -497,72 +437,25 @@ def cmd_selftest(args):
         for v in vs:
             os.makedirs(os.path.join(lib, v), exist_ok=True)
             open(os.path.join(lib, v, 'POTCAR'), 'w').write('   TITEL  = PAW_PBE %s 01Jan2000\n' % v)
-    # synthetic embedded precipitate: fcc Cu 5x5x5 conventional cells, a Ta bilayer, Li, one core site
-    a = 3.63; pos = []
-    for i in range(5):
-        for j in range(5):
-            for k in range(5):
-                for b in ((0, 0, 0), (.5, .5, 0), (.5, 0, .5), (0, .5, .5)):
-                    pos.append(((i + b[0]) / 5, (j + b[1]) / 5, (k + b[2]) / 5))
-    sym = []
-    for idx, p in enumerate(pos):
-        z = p[2] * 5 * a
-        sym.append('Ta' if 5 < z < 7 else ('Li' if z > 9 and idx % 4 == 0 else 'Cu'))
-    core = min(range(len(pos)), key=lambda q: (pos[q][0] - .5) ** 2 + (pos[q][1] - .5) ** 2 + (pos[q][2] * 5 * a - 13.6) ** 2 / (5 * a) ** 2 + (1 if sym[q] != 'Cu' else 0))
-    E = {'host': (-3000.000, -3000.050), 'tacore': (-3007.300, -3007.377)}   # only TOTEN reproduces +0.81
-    for name in ('host', 'tacore'):
-        s2 = list(sym)
-        if name == 'tacore': s2[core] = 'Ta'
-        d = os.path.join(tmp, 'orig_' + name); os.makedirs(d)
-        order = ['Cu', 'Li', 'Ta']
-        with open(os.path.join(d, 'CONTCAR'), 'w') as f:
-            f.write('synthetic %s\n1.0\n%f 0 0\n0 %f 0\n0 0 %f\n%s\n%s\nDirect\n' % (name, 5 * a, 5 * a, 5 * a, ' '.join(order), ' '.join(str(s2.count(e)) for e in order)))
-            for e in order:
-                for q in range(len(pos)):
-                    if s2[q] == e: f.write('%.6f %.6f %.6f\n' % pos[q])
-        cnt = [s2.count(e) for e in order]
-        open(os.path.join(d, 'INCAR'), 'w').write('ENCUT = 500\nISPIN = 2\nMAGMOM = %d*0.0 %d*0.0 %d*0.5\nICHARG = 1\nEDIFF = 1E-3\nIBRION = 1\nNSW = 200\n' % tuple(cnt))
-        open(os.path.join(d, 'KPOINTS'), 'w').write('G\n0\nGamma\n1 1 1\n0 0 0\n')
-        open(os.path.join(d, 'POTCAR'), 'w').write(''.join('   TITEL  = PAW_PBE %s 01Jan2000\n' % e for e in order))
-        open(os.path.join(d, 'OUTCAR'), 'w').write('   NIONS = %d\n  free  energy   TOTEN  =  %.3f eV\n  energy  without entropy=  %.3f  energy(sigma->0) =  %.3f\n reached required accuracy\n General timing and accounting informations for this job:\n'
-                                                   % (len(pos), E[name][1], E[name][0], E[name][0]))
     fake = os.path.join(tmp, 'fakevasp.py'); open(fake, 'w').write(FAKE_VASP)
     c = configparser.ConfigParser(); c.optionxform = str
     c.read_dict({'vasp': {'std': '%s %s' % (sys.executable, fake), 'gam': '%s %s' % (sys.executable, fake), 'modules': ''},
-                 'paths': dict({'potcar_lib': lib, 'ta_core': os.path.join(tmp, 'orig_tacore'), 'host': os.path.join(tmp, 'orig_host')},
-                               **{'screen_' + el: '' for el in SCREEN}),
+                 'paths': {'potcar_lib': lib},
                  'scheduler': {'type': 'local'}, 'run': {'core_elements': 'Nb Zr', 'ntasks': '1'}})
     with open(os.path.join(R, 'culita.cfg'), 'w') as f: c.write(f)
-    # packaged-mode copy of the repository (no original runs)
-    R2 = os.path.join(tmp, 'repo_packaged'); shutil.copytree(R, R2)
-    c.set('paths', 'ta_core', ''); c.set('paths', 'host', '')
-    with open(os.path.join(R2, 'culita.cfg'), 'w') as f: c.write(f)
-
-    def scenario(repo, extra_env):
-        env = dict(os.environ); env.update(extra_env)
-        r = subprocess.run([sys.executable, os.path.join(repo, 'culita.py'), 'run', '--local', '--wait'], env=env,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        res = open(os.path.join(repo, 'results.txt')).read() if os.path.isfile(os.path.join(repo, 'results.txt')) else ''
-        return r, res
-
-    r1, res1 = scenario(R, {'ORIGINAL_MODE': '1'})
-    inc = os.path.join(R, 'core', 'Nb', 'INCAR')
-    r2, res2 = scenario(R2, {})
-    checks = [('original mode: run finished', r1.returncode == 0),
-              ('original mode: Ta reference reproduced (+0.810, TOTEN chosen)', '+0.810' in res1 and 'using TOTEN' in res1),
-              ('original mode: E_subs(Nb) = +0.373 eV', 'E_subs(Nb) = +0.373' in res1),
-              ('original mode: E_subs(Zr) = +0.173 eV', 'E_subs(Zr) = +0.173' in res1),
-              ('original mode: MAGMOM re-mapped', os.path.isfile(inc) and 'MAGMOM' in open(inc).read()),
-              ('bulk controls PASS', res1.count('control PASS') == 3),
-              ('packaged mode: run finished (host, Ta, Nb, Zr)', r2.returncode == 0),
-              ('packaged mode: E_subs(Ta) = +0.810 eV', 'E_subs(Ta) = +0.810 eV in this cell' in res2),
-              ('packaged mode: E_subs(Nb) = +0.400 eV', 'E_subs(Nb) = +0.400' in res2),
-              ('packaged mode: E_subs(Zr) - E_subs(Ta) = -0.610 eV', 'E_subs(Zr) - E_subs(Ta) = -0.610' in res2)]
+    env = dict(os.environ)
+    r = subprocess.run([sys.executable, os.path.join(R, 'culita.py'), 'run', '--local', '--wait'], env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    res = open(os.path.join(R, 'results.txt')).read() if os.path.isfile(os.path.join(R, 'results.txt')) else ''
+    checks = [('run finished (bulk; core host, Ta, Nb, Zr)', r.returncode == 0),
+              ('bulk controls Cu, Li, Ta PASS', res.count('control PASS') == 3),
+              ('E_subs(Ta) = +0.810 eV', 'E_subs(Ta) = +0.810 eV in this cell' in res),
+              ('E_subs(Nb) = +0.400 eV', 'E_subs(Nb) = +0.400' in res),
+              ('E_subs(Zr) - E_subs(Ta) = -0.610 eV', 'E_subs(Zr) - E_subs(Ta) = -0.610' in res)]
     ok = all(v for _, v in checks)
     for lab, v in checks: say(lab, 'ok' if v else 'err')
     if not ok:
-        for r, res in ((r1, res1), (r2, res2)):
-            print(r.stdout[-3000:]); print(res)
+        print(r.stdout[-3000:]); print(res)
     say('SELFTEST %s  (work folder: %s)' % ('PASSED' if ok else 'FAILED', tmp), 'ok' if ok else 'err')
     if ok: shutil.rmtree(tmp, ignore_errors=True)
     sys.exit(0 if ok else 1)

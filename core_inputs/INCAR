@@ -1,4 +1,4 @@
-SYSTEM = embedded Cu3Li precipitate, core substitution (packaged cell)
+SYSTEM = embedded Cu3Li precipitate, core substitution (459-atom cell)
 ! settings stated in the paper: PBE/PAW, ENCUT = 500 eV, EDIFF = 1E-3 eV, Gamma point, quasi-Newton relaxation
 ENCUT  = 500
 GGA    = PE

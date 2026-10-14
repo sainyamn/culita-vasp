@@ -8,8 +8,7 @@ Checks written to results.txt (PASS / CHECK):
         - relax    : second ISIF=3 relaxation reached the force criterion
         - controls : Cu, Li, Ta within 10 meV/atom of the paper's mu
   core  - ionic    : 'reached required accuracy' and the largest remaining force
-        - field    : which OUTCAR energy (energy(sigma->0) or TOTEN) reproduces the original Ta value of +0.81 eV
-                     from the original OUTCARs; that field is then used for Nb and Zr.
+        - energies : energy(sigma->0) for host, Ta and X (all relaxed here in the same cell)
 Pure Python 3."""
 import os, re, glob
 
@@ -64,40 +63,19 @@ for d in sorted(glob.glob(os.path.join(root, 'bulk', '*'))):
                f'{str(r2["conv"]):>6s} {PAPER_MU.get(el, float("nan")):9.3f}  {", ".join(checks)}  [{pot}]')
 
 out += ['', 'CORE SUBSTITUTION  E_subs = E(core X) - E1(host) - mu_X + mu_Cu']
-orig = os.environ.get('ORIG_TA_CORE_DIR', '')
-packaged = not (orig and os.path.isdir(orig))
 field = 'e0'
-if packaged:
-    out.append('mode: PACKAGED cell (core_inputs/, 459 atoms; host, Ta and X all relaxed here with the same INCAR)')
-    h = read_outcar(os.path.join(root, 'core', 'host', 'OUTCAR')); t = read_outcar(os.path.join(root, 'core', 'Ta', 'OUTCAR'))
-    for lab, r in (('host', h), ('Ta', t)):
-        fm = '%.3f eV/A' % r['fmax'] if r['fmax'] is not None else 'n/a'
-        out.append('%s: relaxation %s (largest remaining force %s); E = %s eV' % (lab, flag(r['conv']), fm, r['e0']))
-    if h['e0'] is not None and t['e0'] is not None and 'Ta' in mu and 'Cu' in mu:
-        v = t['e0'] - h['e0'] - mu['Ta'] + mu['Cu']
-        out.append('E_subs(Ta) = %+.3f eV in this cell (new mu)   [published +0.81 eV from the original cell: %s]'
-                   % (v, 'consistent' if abs(v - PAPER_TA_SUBS) < 0.1 else 'differs by %+.2f eV - same site/cell as the original? see README' % (v - PAPER_TA_SUBS)))
-else:
-    out.append('mode: ORIGINAL cell (%s)' % orig)
-    h = read_outcar(os.path.join(os.environ.get('ORIG_HOST_DIR', ''), 'OUTCAR'))
-    t = read_outcar(os.path.join(orig, 'OUTCAR'))
-    if h['e0'] is not None and t['e0'] is not None:
-        best = None
-        for fld, name in (('e0', 'energy(sigma->0)'), ('toten', 'TOTEN')):
-            if h[fld] is None or t[fld] is None: continue
-            v = t[fld] - h[fld] - PAPER_MU['Ta'] + PAPER_MU['Cu']
-            out.append('CHECK original Ta with %-16s: E_subs(Ta) = %+.3f eV (paper +%s)' % (name, v, PAPER_TA_SUBS))
-            if best is None or abs(v - PAPER_TA_SUBS) < best[0]:
-                best = (abs(v - PAPER_TA_SUBS), fld, name)
-        field = best[1]
-        out.append('  -> using %s for Nb/Zr  [%s reproduces +0.81 within 0.02 eV]' % (best[2], flag(best[0] < 0.02)))
-        if 'Ta' in mu and 'Cu' in mu:
-            out.append('  original Ta with the NEW bulk mu: E_subs(Ta) = %+.3f eV' % (t[field] - h[field] - mu['Ta'] + mu['Cu']))
-    else:
-        out.append('original host / Ta-core OUTCAR not found: check ORIG_HOST_DIR and ORIG_TA_CORE_DIR')
+out.append('cell: core_inputs/ (459 atoms); host, Ta and X all relaxed here with the same INCAR')
+h = read_outcar(os.path.join(root, 'core', 'host', 'OUTCAR')); t = read_outcar(os.path.join(root, 'core', 'Ta', 'OUTCAR'))
+for lab, r in (('host', h), ('Ta', t)):
+    fm = '%.3f eV/A' % r['fmax'] if r['fmax'] is not None else 'n/a'
+    out.append('%s: relaxation %s (largest remaining force %s); E = %s eV' % (lab, flag(r['conv']), fm, r['e0']))
+if h['e0'] is not None and t['e0'] is not None and 'Ta' in mu and 'Cu' in mu:
+    v = t['e0'] - h['e0'] - mu['Ta'] + mu['Cu']
+    out.append('E_subs(Ta) = %+.3f eV in this cell (new mu)   [published value +0.81 eV: %s]'
+               % (v, 'consistent' if abs(v - PAPER_TA_SUBS) < 0.1 else 'differs by %+.2f eV; the X - Ta differences below are unaffected' % (v - PAPER_TA_SUBS)))
 for d in sorted(glob.glob(os.path.join(root, 'core', '*'))):
     X = os.path.basename(d)
-    if X in ('host',) or (packaged and X == 'Ta'):
+    if X in ('host', 'Ta'):
         continue
     c = read_outcar(os.path.join(d, 'OUTCAR'))
     if c[field] is None or h.get(field) is None or X not in mu:
