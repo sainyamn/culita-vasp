@@ -18,6 +18,8 @@ same settings as the original interface runs, and returns the numbers with conve
 No VASP binaries or POTCAR files are included; the tool uses the licensed installation on your cluster.
 Requirements: Python ≥ 3.6 (standard library only), VASP 5.4.4, a PBE PAW library, Slurm, PBS or an interactive node.
 
+> **For the two calculations requested for the letter, see [RUN_GUIDE.md](RUN_GUIDE.md)** (what to run and the answers for setup).
+
 ## Quick start (about 10 minutes of your time)
 
 ```bash
